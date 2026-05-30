@@ -30,9 +30,14 @@ famous millionth *decimal* digit (`1`) is `-digit 1000001`.
 ```bash
 go run . -digit 1000          # the 1000th position
 go run . -digit 1000000       # the 1,000,000th position
+go run . -digit 100 -all      # print π to 100 places
 go run . -digit 1000000 -verbose   # also print per-stage timings
 go run .                      # default: digit 10000
 ```
+
+`-all` prints the full expansion to `-digit` places — the same arbitrary-precision
+value the single-digit mode slices into (computing digit *n* computes all *n*
+digits, since there is no base-10 spigot).
 
 ### Example output
 

@@ -238,6 +238,7 @@ func piDecimalString(d int) string {
 
 func main() {
 	digitPos := flag.Int("digit", 10000, "which digit of π to compute (digit 1 = the integer part '3')")
+	all := flag.Bool("all", false, "print π to `-digit` places instead of just the digit at that position")
 	verbose := flag.Bool("verbose", false, "print stage timings")
 	flag.Parse()
 	if *digitPos < 1 {
@@ -245,10 +246,27 @@ func main() {
 	}
 
 	fmt.Printf("Using %d CPU cores\n", runtime.NumCPU())
-	fmt.Printf("Calculating digit %d of π\n\n", *digitPos)
 
 	var st stageTimes
 	start := time.Now()
+
+	if *all {
+		// Full expansion: positions 1..digitPos ("3" + digitPos-1 decimals).
+		fmt.Printf("Computing π to %d places\n\n", *digitPos)
+		s := piFloor(*digitPos-1, &st).String()
+		elapsed := time.Since(start)
+		if len(s) > 1 {
+			s = s[:1] + "." + s[1:]
+		}
+		fmt.Printf("π = %s\n", s)
+		fmt.Printf("Total time: %v\n", elapsed)
+		if *verbose {
+			fmt.Printf("  split %v, sqrt %v, div %v\n", st.split, st.sqrt, st.div)
+		}
+		return
+	}
+
+	fmt.Printf("Calculating digit %d of π\n\n", *digitPos)
 	digit, window := extractWindow(*digitPos, &st)
 	elapsed := time.Since(start)
 
