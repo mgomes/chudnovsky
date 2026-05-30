@@ -1,91 +1,104 @@
 # Go Chudnovsky Algorithm
 
-A high-performance parallel implementation of the Chudnovsky algorithm in Go for calculating π (pi) to arbitrary precision and extracting specific digits.
+A high-performance parallel implementation of the Chudnovsky algorithm in Go.
+Computes π to arbitrary precision and extracts a specific decimal digit.
 
 ## Overview
 
-This project provides a multi-threaded implementation of the [Chudnovsky algorithm](https://en.wikipedia.org/wiki/Chudnovsky_algorithm), one of the fastest methods for computing π. The implementation features:
+This computes π to arbitrary precision — the full expansion (`-all`) or a single
+chosen digit deep in it — via the
+[Chudnovsky algorithm](https://en.wikipedia.org/wiki/Chudnovsky_algorithm) with
+binary splitting. To beat the standard library's Karatsuba ceiling at large
+sizes, the heavy arithmetic uses FFT multiplication. (There is no base-10
+spigot, so a single deep digit still requires computing the whole prefix — the
+digit mode just slices the same arbitrary-precision value.)
 
-- **Parallel binary splitting** for maximum performance
-- **Efficient digit extraction** for specific positions
-- **Multi-core utilization** using Go's goroutines
-- **Arbitrary precision arithmetic** via Go's `math/big` package
-
-## Features
-
-- Calculate specific digits of π (e.g., the 1,000,000th digit)
-- Parallel processing utilizing all CPU cores
-- Optimized memory usage for large computations
-- Fast execution (1.3 seconds for 1 million digits on modern hardware)
+- **Parallel binary splitting** across all CPU cores
+- **FFT multiplication** (Schönhage–Strassen, via
+  [`bigfft`](https://github.com/remyoudompheng/bigfft)) for large operands, with
+  an automatic fallback to `math/big` Karatsuba below the measured crossover
+- **FFT-backed division and √** — a Newton reciprocal and a Newton
+  inverse-square-root reduce both to FFT multiplies (the standard library's
+  division and `Float.Sqrt` are Karatsuba-only)
+- **Exact integer-domain pipeline** — the result is computed as `⌊π·10ⁿ⌋` with
+  no floating point at all
+- **Cheap digit extraction** via modular arithmetic (no full base conversion)
 
 ## Usage
 
-Run the program with a command-line flag to specify which digit of π to calculate:
+`-digit N` selects the digit by 1-based position, where **position 1 is the
+integer part `3`** and position N (N ≥ 2) is the (N−1)th decimal digit. So the
+famous millionth *decimal* digit (`1`) is `-digit 1000001`.
 
 ```bash
-# Calculate the 1000th digit of π
-go run main.go -digit 1000
-
-# Calculate the 1,000,000th digit of π
-go run main.go -digit 1000000
-
-# Calculate the 10th digit of π (default if no flag provided)
-go run main.go
+go run . -digit 1000          # the 1000th position
+go run . -digit 1000000       # the 1,000,000th position
+go run . -digit 100 -all      # print π to 100 places
+go run . -digit 1000000 -verbose   # also print per-stage timings
+go run .                      # default: digit 10000
 ```
 
-### Example Output
+`-all` prints the full expansion to `-digit` places instead of just the digit at
+that position.
+
+### Example output
 
 ```
 Using 10 CPU cores
-Calculating digit 1000000 of pi
+Calculating digit 1000000 of π
 
-Running optimized parallel version...
-Parallel computation time: 1.345945708s
-Extracting digit 1000000...
-
-Digit 1000000 of pi is: 5
+Digit 1000000 of π is: 5
+Total time: 545ms
+Context: ...94581[5]13092...
 ```
 
-## The Chudnovsky Algorithm
+## The algorithm
 
-The Chudnovsky algorithm is a fast method for calculating π based on Ramanujan's work. It converges much more rapidly than other methods, adding roughly 14 digits of π per term.
-
-The formula used is:
+Chudnovsky converges at ≈14.18 digits per term:
 
 ```
-1/π = 12 ∑ (-1)^k (6k)! (545140134k + 13591409) / ((3k)! (k!)^3 (640320^3)^k)
+1/π = 12 ∑ (-1)^k (6k)! (545140134k + 13591409) / ((3k)! (k!)³ (640320³)^k)
 ```
 
-This implementation optimizes the computation using parallel binary splitting, which:
-- Reduces asymptotic complexity from O(n²) to O(n log³ n)
-- Utilizes multiple CPU cores for maximum performance
-- Efficiently extracts specific digits without converting the entire number to string
+Binary splitting evaluates the truncated series as a single rational `Q`, `R`,
+turning the sum into a balanced tree of big-integer multiplications — `O(M(n)
+log n)` instead of `O(n²)`. The largest of those multiplications (and the final
+division) dominate at scale, which is where FFT pays off.
 
 ## Performance
 
-The parallel implementation provides significant speedup over serial computation:
+Measured on a 10-core Apple Silicon machine, total wall time (best of N):
 
-- **1,000,000th digit**: ~1.3 seconds on modern multi-core systems
-- **Scalable**: Performance scales with available CPU cores
-- **Memory efficient**: Optimized digit extraction for large positions
+| digit position | before | after | speedup |
+| --- | --- | --- | --- |
+| 10,000 | 40 ms | 5 ms | 7.6× |
+| 100,000 | 3.5 s | 33 ms | 105× |
+| 1,000,000 | 1.32 s | 0.48 s | 2.8× |
+| 10,000,000 | 52.6 s | 9.0 s | 5.9× |
 
-## Architecture
+The 10k–100k jumps come largely from fixing an extraction bug; the 1M–10M gains
+are the FFT + parallel arithmetic, and grow with size. Note that Go's `math/big`
+has no FFT multiply, so the standard-library ceiling is Karatsuba (`O(n^1.585)`);
+`bigfft` brings the hot multiply/divide/√ down toward `O(n log n)`.
 
-The implementation includes several optimization levels:
+## Tests
 
-1. **Serial binary splitting**: Basic optimized algorithm
-2. **Parallel binary splitting**: Multi-threaded version with controlled recursion depth
-3. **Optimized parallel version**: Production-ready implementation with efficient digit extraction
+```bash
+go test -short -race ./...   # fast: unit + property tests, race detector
+go test -race ./...          # full: includes the 1,000,000-digit regression lock
+go test -bench=. ./...       # benchmarks (binary split, parallel split, extraction)
+```
+
+The suite locks correctness against a reference value of π (1000 decimals),
+checks the parallel/FFT path bit-for-bit against the serial Karatsuba reference,
+fuzzes the FFT divider and inverse-square-root against `math/big`, and pins
+documented digits as regression locks.
 
 ## Dependencies
 
-This project only depends on Go's standard library:
-- `flag` for command-line argument parsing
-- `fmt` for output formatting
-- `math/big` for arbitrary precision arithmetic
-- `runtime` for CPU core detection
-- `sync` for goroutine synchronization
-- `time` for performance measurement
+- Go's standard library (`math/big`, `runtime`, `sync`, …)
+- [`github.com/remyoudompheng/bigfft`](https://github.com/remyoudompheng/bigfft)
+  — pure-Go FFT big-integer multiplication (no cgo)
 
 ## License
 
