@@ -1,14 +1,17 @@
 # Go Chudnovsky Algorithm
 
-A high-performance parallel implementation of the Chudnovsky algorithm in Go for
-calculating π and extracting a specific decimal digit.
+A high-performance parallel implementation of the Chudnovsky algorithm in Go.
+Computes π to arbitrary precision and extracts a specific decimal digit.
 
 ## Overview
 
-This computes a chosen decimal digit of π via the
+This computes π to arbitrary precision — the full expansion (`-all`) or a single
+chosen digit deep in it — via the
 [Chudnovsky algorithm](https://en.wikipedia.org/wiki/Chudnovsky_algorithm) with
 binary splitting. To beat the standard library's Karatsuba ceiling at large
-sizes, the heavy arithmetic uses FFT multiplication.
+sizes, the heavy arithmetic uses FFT multiplication. (There is no base-10
+spigot, so a single deep digit still requires computing the whole prefix — the
+digit mode just slices the same arbitrary-precision value.)
 
 - **Parallel binary splitting** across all CPU cores
 - **FFT multiplication** (Schönhage–Strassen, via
@@ -35,9 +38,8 @@ go run . -digit 1000000 -verbose   # also print per-stage timings
 go run .                      # default: digit 10000
 ```
 
-`-all` prints the full expansion to `-digit` places — the same arbitrary-precision
-value the single-digit mode slices into (computing digit *n* computes all *n*
-digits, since there is no base-10 spigot).
+`-all` prints the full expansion to `-digit` places instead of just the digit at
+that position.
 
 ### Example output
 
@@ -89,8 +91,8 @@ go test -bench=. ./...       # benchmarks (binary split, parallel split, extract
 
 The suite locks correctness against a reference value of π (1000 decimals),
 checks the parallel/FFT path bit-for-bit against the serial Karatsuba reference,
-fuzzes the FFT divider against `math/big`, and pins documented digits as
-regression locks.
+fuzzes the FFT divider and inverse-square-root against `math/big`, and pins
+documented digits as regression locks.
 
 ## Dependencies
 
