@@ -18,19 +18,19 @@ computing the whole prefix — the digit mode just slices it.
 
 ## Speed
 
-10-core M-series, total wall time:
+Total wall time to compute a digit, on a 10-core M-series:
 
-| digit | before | after | |
-| --- | --- | --- | --- |
-| 100,000 | 3.5 s | 33 ms | 105× |
-| 1,000,000 | 1.3 s | 0.48 s | 2.8× |
-| 10,000,000 | 53 s | 9 s | 5.9× |
+| digit | time |
+| --- | --- |
+| 100,000 | 33 ms |
+| 1,000,000 | 0.48 s |
+| 10,000,000 | 9 s |
 
-Go's `math/big` has no FFT, so it tops out at Karatsuba (`O(n^1.585)`). Dropping
-in [bigfft](https://github.com/remyoudompheng/bigfft) for the hot
-multiply/divide/√ pulls it toward `O(n log n)`, and the win grows with size. (The
-100k jump is mostly a separate fix — it used to spend seconds formatting a few
-context digits.)
+Go's `math/big` tops out at Karatsuba (`O(n^1.585)`) — no FFT — so the big
+multiplies, divides, and √ go through
+[bigfft](https://github.com/remyoudompheng/bigfft) (`O(n log n)`) above a size
+threshold, with a stdlib fallback below it. The bigger the number, the more that
+pays off.
 
 ## Notes
 
