@@ -54,8 +54,20 @@ func mul(x, y *big.Int) *big.Int {
 	return new(big.Int).Mul(x, y)
 }
 
+// pow10 returns 10^n by square-and-multiply, using the FFT path for the large
+// products.
 func pow10(n int) *big.Int {
-	return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(n)), nil)
+	result := big.NewInt(1)
+	base := big.NewInt(10)
+	for n > 0 {
+		if n&1 == 1 {
+			result = mul(result, base)
+		}
+		if n >>= 1; n > 0 {
+			base = mul(base, base)
+		}
+	}
+	return result
 }
 
 // splitTerm is the binary-splitting base case for a single term k = a.
@@ -149,11 +161,6 @@ func terms(d int) int64 {
 	return int64(math.Ceil(float64(d)/digitsPerTerm)) + 4
 }
 
-// precBits returns the float precision (in bits) needed for d correct decimals.
-func precBits(d int) uint {
-	return uint(math.Ceil(float64(d)*log2of10)) + 64
-}
-
 // parallelDepth picks the recursion depth that exposes ≈4 tasks per core.
 func parallelDepth() int {
 	d := 0
@@ -176,7 +183,6 @@ func piFloor(d int, st *stageTimes) *big.Int { return piFloorGuard(d, guardDigit
 // result is stable as the guard grows (a too-small guard would diverge).
 func piFloorGuard(d, guard int, st *stageTimes) *big.Int {
 	total := d + guard
-	prec := precBits(total)
 
 	t := time.Now()
 	_, Q, R := parallelSplit(1, terms(total), parallelDepth(), false)
@@ -184,11 +190,9 @@ func piFloorGuard(d, guard int, st *stageTimes) *big.Int {
 		st.split = time.Since(t)
 	}
 
-	// S = ⌊√10005 · 10^total⌋, via the (fast, precision-doubling) float sqrt.
+	// S = ⌊√10005 · 10^total⌋, via the FFT inverse-square-root.
 	t = time.Now()
-	sf := new(big.Float).SetPrec(prec).SetInt64(10005)
-	sf.Sqrt(sf)
-	S, _ := new(big.Float).SetPrec(prec).Mul(sf, new(big.Float).SetInt(pow10(total))).Int(nil)
+	S := sqrt10005Scaled(total)
 	if st != nil {
 		st.sqrt = time.Since(t)
 	}
