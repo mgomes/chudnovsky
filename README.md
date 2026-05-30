@@ -11,11 +11,14 @@ binary splitting. To beat the standard library's Karatsuba ceiling at large
 sizes, the heavy arithmetic uses FFT multiplication.
 
 - **Parallel binary splitting** across all CPU cores
-- **FFT multiplication and division** (Schönhage–Strassen, via
+- **FFT multiplication** (Schönhage–Strassen, via
   [`bigfft`](https://github.com/remyoudompheng/bigfft)) for large operands, with
   an automatic fallback to `math/big` Karatsuba below the measured crossover
-- **Integer-domain pipeline** — the result is computed as `⌊π·10ⁿ⌋` with exact
-  integer arithmetic; the only floating-point step is the one-off `√10005`
+- **FFT-backed division and √** — a Newton reciprocal and a Newton
+  inverse-square-root reduce both to FFT multiplies (the standard library's
+  division and `Float.Sqrt` are Karatsuba-only)
+- **Exact integer-domain pipeline** — the result is computed as `⌊π·10ⁿ⌋` with
+  no floating point at all
 - **Cheap digit extraction** via modular arithmetic (no full base conversion)
 
 ## Usage
@@ -61,15 +64,15 @@ Measured on a 10-core Apple Silicon machine, total wall time (best of N):
 
 | digit position | before | after | speedup |
 | --- | --- | --- | --- |
-| 10,000 | 41 ms | 4 ms | 9.6× |
-| 100,000 | 3.6 s | 31 ms | 115× |
-| 1,000,000 | 1.36 s | 0.55 s | 2.5× |
-| 10,000,000 | 52.6 s | 16.8 s | 3.1× |
+| 10,000 | 40 ms | 5 ms | 7.6× |
+| 100,000 | 3.5 s | 33 ms | 105× |
+| 1,000,000 | 1.32 s | 0.48 s | 2.8× |
+| 10,000,000 | 52.6 s | 9.0 s | 5.9× |
 
 The 10k–100k jumps come largely from fixing an extraction bug; the 1M–10M gains
-are the FFT + parallel arithmetic. Note that Go's `math/big` has no FFT multiply,
-so the standard-library ceiling is Karatsuba (`O(n^1.585)`); `bigfft` brings the
-hot multiply/divide down toward `O(n log n)`.
+are the FFT + parallel arithmetic, and grow with size. Note that Go's `math/big`
+has no FFT multiply, so the standard-library ceiling is Karatsuba (`O(n^1.585)`);
+`bigfft` brings the hot multiply/divide/√ down toward `O(n log n)`.
 
 ## Tests
 
