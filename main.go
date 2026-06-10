@@ -54,11 +54,11 @@ func mul(x, y *big.Int) *big.Int {
 	return new(big.Int).Mul(x, y)
 }
 
-// pow10 returns 10^n by square-and-multiply, using the FFT path for the large
+// pow5 returns 5^n by square-and-multiply, using the FFT path for the large
 // products.
-func pow10(n int) *big.Int {
+func pow5(n int) *big.Int {
 	result := big.NewInt(1)
-	base := big.NewInt(10)
+	base := big.NewInt(5)
 	for n > 0 {
 		if n&1 == 1 {
 			result = mul(result, base)
@@ -68,6 +68,13 @@ func pow10(n int) *big.Int {
 		}
 	}
 	return result
+}
+
+// pow10 returns 10^n as 5^n·2^n: the multiply chain runs on the ~30% smaller
+// 5^n operands (2.32 vs 3.32 bits per digit) and the power of two is one shift.
+func pow10(n int) *big.Int {
+	p := pow5(n)
+	return p.Lsh(p, uint(n))
 }
 
 // splitTerm is the binary-splitting base case for a single term k = a.

@@ -23,8 +23,8 @@ func sqrt10005Scaled(total int) *big.Int {
 	p := uint(math.Ceil(float64(total)*log2of10)) + 64 // 2^p ≫ 10005·10^total
 	r := invSqrtConst(10005, p)                        // ≈ ⌊2^p / √10005⌋
 	s := new(big.Int).Mul(big.NewInt(10005), r)        // ≈ √10005 · 2^p
-	s = mul(s, pow10(total))                           // · 10^total  (FFT)
-	return s.Rsh(s, p)                                 // ⌊√10005 · 10^total⌋
+	s = mul(s, pow5(total))                            // · 5^total  (FFT)
+	return s.Rsh(s, p-uint(total))                     // ⌊√10005 · 10^total⌋ — the ·2^total folds into the shift
 }
 
 // invSqrtConst returns ≈ ⌊2^p / √c⌋ for a small positive constant c, via Newton
