@@ -40,15 +40,19 @@ func recip(v *big.Int, s uint) *big.Int {
 		num := new(big.Int).Lsh(bigOne, s)
 		return num.Quo(num, v)
 	}
-	// Solve at roughly half precision, then refine with one Newton step:
-	//   x ← x·(2^(s+1) − v·x) >> s   converges quadratically to 2^s/v.
+	// Solve at roughly half precision, then refine with one Newton step,
+	//   x ← x·(2^(s+1) − v·x) >> s,  quadratically convergent to 2^s/v,
+	// computed — bit for bit identically — as r0 + ⌊ρ·d̃/2^(2sp−s)⌋ where
+	// ρ is the unshifted child, r0 = ρ·2^(s−sp), and d̃ = 2^sp − v·ρ is the
+	// child's residual (|d̃| < 2v). This keeps r0's s−sp trailing zero bits
+	// and t's full width out of the FFTs.
 	sp := (s+vb)/2 + 1
-	r0 := new(big.Int).Lsh(recip(v, sp), s-sp) // ≈ 2^s/v at half precision
-	vr := mul(v, r0)                           // ≈ 2^s
-	t := new(big.Int).Lsh(bigOne, s+1)
-	t.Sub(t, vr) // 2^(s+1) − v·r0
-	r := mul(r0, t)
-	return r.Rsh(r, s)
+	rho := recip(v, sp) // ≈ 2^sp/v, kept unshifted
+	d := new(big.Int).Lsh(bigOne, sp)
+	d.Sub(d, mul(v, rho)) // d̃ = 2^sp − v·ρ
+	rd := mul(rho, d)     // ρ·d̃
+	r := new(big.Int).Lsh(rho, s-sp)
+	return r.Add(r, rd.Rsh(rd, 2*sp-s)) // r0 + ⌊ρ·d̃/2^(2sp−s)⌋ = ⌊r0·t/2^s⌋
 }
 
 // divApprox returns ⌊u / v⌋ to within one ulp either side, for u ≥ 0 and
