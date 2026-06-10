@@ -240,7 +240,7 @@ func piFloorGuard(d, guard int, st *stageTimes) *big.Int {
 	}
 	num := mul(new(big.Int).Mul(big.NewInt(426880), S), Q)
 	den := new(big.Int).Add(new(big.Int).Mul(c13591409, Q), R)
-	v := divFFT(num, den) // ⌊π·10^total⌋
+	v := divApprox(num, den) // ⌊π·10^total⌋, possibly one ulp low — guard-absorbed
 	if st != nil {
 		st.div = time.Since(t)
 	}
