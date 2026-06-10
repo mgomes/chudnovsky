@@ -41,9 +41,12 @@ const (
 	fftMinBits = 200000
 	// Context digits shown on each side of the target digit.
 	ctxWindow = 5
-	// Below this many terms a subtree is split serially — goroutine overhead
-	// would otherwise dominate the tiny multiplies near the leaves.
-	serialCutoff = 256
+	// Below this many terms a subtree is split serially: a chunky serial leaf
+	// keeps cache locality and its operands (~225k bits of Q at the cutoff)
+	// sit at the FFT crossover, so everything above the cutoff combines
+	// through the mul dispatcher and everything below belongs to Karatsuba
+	// anyway.
+	serialCutoff = 2048
 )
 
 // mul returns x·y, using FFT for large operands and Karatsuba otherwise.
@@ -115,14 +118,19 @@ func binarySplit(a, b int64) (P, Q, R *big.Int) {
 }
 
 // parallelSplit computes the binary split over [a, b) with the two halves and
-// the combine multiplications run concurrently down to a serial cutoff.
+// the combine multiplications run concurrently down to the serial cutoff.
+// Recursing to the cutoff (rather than to a core-count depth) keeps every
+// combine above ~serialCutoff terms on the mul dispatcher — a depth-limited
+// split left each leaf's top combines, megabit operands included, on the
+// stdlib path — and the thousands of small subtree goroutines let the
+// scheduler absorb the ~2× first-to-last leaf work skew.
 //
 // needP reports whether this node's P output is consumed by its parent. Only
 // the left child's P feeds R = R1·Q2 + P1·R2, so the entire rightmost spine
 // (starting at the root) can skip forming P = P1·P2 — the largest discarded
 // multiply in the whole computation.
-func parallelSplit(a, b int64, depth int, needP bool) (P, Q, R *big.Int) {
-	if depth <= 0 || b-a < serialCutoff {
+func parallelSplit(a, b int64, needP bool) (P, Q, R *big.Int) {
+	if b-a < serialCutoff {
 		P, Q, R = binarySplit(a, b)
 		return
 	}
@@ -130,8 +138,8 @@ func parallelSplit(a, b int64, depth int, needP bool) (P, Q, R *big.Int) {
 	var P1, Q1, R1, P2, Q2, R2 *big.Int
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); P1, Q1, R1 = parallelSplit(a, m, depth-1, true) }()
-	go func() { defer wg.Done(); P2, Q2, R2 = parallelSplit(m, b, depth-1, needP) }()
+	go func() { defer wg.Done(); P1, Q1, R1 = parallelSplit(a, m, true) }()
+	go func() { defer wg.Done(); P2, Q2, R2 = parallelSplit(m, b, needP) }()
 	wg.Wait()
 
 	// Combine. Q, R1·Q2 and P1·R2 are independent products; run them
@@ -166,15 +174,6 @@ func parallelSplit(a, b int64, depth int, needP bool) (P, Q, R *big.Int) {
 // terms returns the number of Chudnovsky terms needed for d correct decimals.
 func terms(d int) int64 {
 	return int64(math.Ceil(float64(d)/digitsPerTerm)) + 4
-}
-
-// parallelDepth picks the recursion depth that exposes ≈4 tasks per core.
-func parallelDepth() int {
-	d := 0
-	for (1 << d) < 4*runtime.NumCPU() {
-		d++
-	}
-	return d
 }
 
 // stageTimes records per-stage durations when piFloor is asked to profile.
@@ -212,7 +211,7 @@ func piFloorGuard(d, guard int, st *stageTimes) *big.Int {
 	}()
 
 	t := time.Now()
-	_, Q, R := parallelSplit(1, terms(total), parallelDepth(), false)
+	_, Q, R := parallelSplit(1, terms(total), false)
 	splitDone := time.Now()
 	swg.Wait()
 	if st != nil {

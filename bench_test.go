@@ -16,11 +16,10 @@ func BenchmarkBinarySplit(b *testing.B) {
 }
 
 func BenchmarkParallelSplit(b *testing.B) {
-	depth := parallelDepth()
 	for _, n := range []int64{10000, 100000} {
 		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				parallelSplit(1, n, depth, false)
+				parallelSplit(1, n, false)
 			}
 		})
 	}
