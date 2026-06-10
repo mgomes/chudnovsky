@@ -23,7 +23,7 @@ func sqrt10005Scaled(total int) *big.Int {
 	p := uint(math.Ceil(float64(total)*log2of10)) + 64 // 2^p ≫ 10005·10^total
 	r := invSqrtConst(10005, p)                        // ≈ ⌊2^p / √10005⌋
 	s := new(big.Int).Mul(big.NewInt(10005), r)        // ≈ √10005 · 2^p
-	s = mul(s, pow5(total))                            // · 5^total  (FFT)
+	s = mulPar(s, pow5(total))                         // · 5^total  (FFT)
 	return s.Rsh(s, p-uint(total))                     // ⌊√10005 · 10^total⌋ — the ·2^total folds into the shift
 }
 
@@ -43,11 +43,11 @@ func invSqrtConst(c int64, p uint) *big.Int {
 	}
 	pp := p/2 + 16
 	rho := invSqrtConst(c, pp)       // ≈ 2^pp/√c, kept unshifted
-	y2 := mul(rho, rho)              // ρ² (FFT squaring)
+	y2 := mulPar(rho, rho)           // ρ² (FFT squaring)
 	cy2 := y2.Mul(y2, big.NewInt(c)) // scalar multiply
 	delta := new(big.Int).Lsh(bigOne, 2*p)
 	delta.Sub(delta, cy2.Lsh(cy2, 2*(p-pp))) // δ = 2^(2p) − c·y²  (y = ρ·2^(p−pp))
-	yd := mul(rho, delta)                    // ρ·δ
+	yd := mulPar(rho, delta)                 // ρ·δ
 	y := new(big.Int).Lsh(rho, p-pp)
 	return y.Add(y, yd.Rsh(yd, p+pp+1)) // y + ⌊y·δ/2^(2p+1)⌋ = ⌊y·t/2^(2p+1)⌋
 }

@@ -49,8 +49,8 @@ func recip(v *big.Int, s uint) *big.Int {
 	sp := (s+vb)/2 + 1
 	rho := recip(v, sp) // ≈ 2^sp/v, kept unshifted
 	d := new(big.Int).Lsh(bigOne, sp)
-	d.Sub(d, mul(v, rho)) // d̃ = 2^sp − v·ρ
-	rd := mul(rho, d)     // ρ·d̃
+	d.Sub(d, mulPar(v, rho)) // d̃ = 2^sp − v·ρ
+	rd := mulPar(rho, d)     // ρ·d̃
 	r := new(big.Int).Lsh(rho, s-sp)
 	return r.Add(r, rd.Rsh(rd, 2*sp-s)) // r0 + ⌊ρ·d̃/2^(2sp−s)⌋ = ⌊r0·t/2^s⌋
 }
@@ -81,7 +81,7 @@ func divApprox(u, v *big.Int) *big.Int {
 	if vb := uint(v.BitLen()); vb > recipGuardBits {
 		k = vb - recipGuardBits
 	}
-	q := mul(new(big.Int).Rsh(u, k), r) // ≈ (u/2^k)·(2^s/v)
+	q := mulPar(new(big.Int).Rsh(u, k), r) // ≈ (u/2^k)·(2^s/v)
 	return q.Rsh(q, s-k)
 }
 

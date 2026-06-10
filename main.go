@@ -64,10 +64,10 @@ func pow5(n int) *big.Int {
 	base := big.NewInt(5)
 	for n > 0 {
 		if n&1 == 1 {
-			result = mul(result, base)
+			result = mulPar(result, base)
 		}
 		if n >>= 1; n > 0 {
-			base = mul(base, base)
+			base = mulPar(base, base)
 		}
 	}
 	return result
@@ -237,7 +237,7 @@ func piFloorGuard(d, guard int, st *stageTimes) *big.Int {
 		Q.Rsh(Q, uint(j))
 		R.Rsh(R, uint(j))
 	}
-	num := mul(new(big.Int).Mul(big.NewInt(426880), S), Q)
+	num := mulPar(new(big.Int).Mul(big.NewInt(426880), S), Q)
 	den := new(big.Int).Add(new(big.Int).Mul(c13591409, Q), R)
 	v := divApprox(num, den) // ⌊π·10^total⌋, possibly one ulp low — guard-absorbed
 	if st != nil {
