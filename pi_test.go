@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math/big"
 	"testing"
 )
 
@@ -87,8 +88,9 @@ func TestRegressionLocks(t *testing.T) {
 	}{
 		{1000, 8, true},
 		{10000, 7, true},
-		{50000, 4, true},   // first to use the FFT divider (recip base case)
-		{300000, 9, true},  // first to exercise recip's Newton recursion
+		{50000, 4, true},  // stdlib divider path (num is below the FFT gate post-truncation)
+		{70000, 9, true},  // first to use the FFT divider (recip base case)
+		{300000, 9, true}, // first to exercise recip's Newton recursion
 		{100000, 4, false},
 		{1000000, 5, false},
 		{1000001, 1, false}, // famous millionth decimal digit
@@ -102,6 +104,17 @@ func TestRegressionLocks(t *testing.T) {
 				t.Errorf("extractDigit(%d) = %d, want %d", c.pos, got, c.digit)
 			}
 		})
+	}
+}
+
+// TestPow10 checks the 5^n·2^n decomposition against direct exponentiation,
+// including a size where the 5-chain squarings cross the FFT threshold.
+func TestPow10(t *testing.T) {
+	for _, n := range []int{0, 1, 7, 32, 1000, 200000} {
+		want := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(n)), nil)
+		if pow10(n).Cmp(want) != 0 {
+			t.Fatalf("pow10(%d) != 10^%d", n, n)
+		}
 	}
 }
 

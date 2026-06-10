@@ -30,10 +30,9 @@ func TestParallelMatchesSerial(t *testing.T) {
 	if !testing.Short() {
 		ranges = append(ranges, [2]int64{1, 8000}, [2]int64{1, 12000})
 	}
-	depth := parallelDepth()
 	for _, r := range ranges {
 		wP, wQ, wR := binarySplit(r[0], r[1])
-		gP, gQ, gR := parallelSplit(r[0], r[1], depth, true)
+		gP, gQ, gR := parallelSplit(r[0], r[1], true)
 		if !eq(wP, gP) || !eq(wQ, gQ) || !eq(wR, gR) {
 			t.Fatalf("parallel != serial for [%d,%d)", r[0], r[1])
 		}
@@ -61,10 +60,9 @@ func TestRecurrence(t *testing.T) {
 // TestSkipTopP confirms that skipping the top-level P (needP=false) leaves Q
 // and R unchanged — only P is dropped.
 func TestSkipTopP(t *testing.T) {
-	depth := parallelDepth()
 	for _, b := range []int64{10, 100, 1000, 8000} {
-		_, Q1, R1 := parallelSplit(1, b, depth, true)
-		Pn, Q0, R0 := parallelSplit(1, b, depth, false)
+		_, Q1, R1 := parallelSplit(1, b, true)
+		Pn, Q0, R0 := parallelSplit(1, b, false)
 		if !eq(Q1, Q0) || !eq(R1, R0) {
 			t.Fatalf("skip-top-P changed Q or R for n=%d", b)
 		}
@@ -78,13 +76,49 @@ func TestSkipTopP(t *testing.T) {
 
 // TestParallelDeterminism guards against goroutine-scheduling nondeterminism.
 func TestParallelDeterminism(t *testing.T) {
-	depth := parallelDepth()
-	_, Q0, R0 := parallelSplit(1, 5000, depth, false)
+	_, Q0, R0 := parallelSplit(1, 5000, false)
 	for i := range 20 {
-		_, Q, R := parallelSplit(1, 5000, depth, false)
+		_, Q, R := parallelSplit(1, 5000, false)
 		if !eq(Q, Q0) || !eq(R, R0) {
 			t.Fatalf("nondeterministic parallel split on run %d", i)
 		}
+	}
+}
+
+// TestMulParMatchesStdlib exercises the quadrant-parallel multiply against the
+// standard library: sizes straddling its gate, sign combinations (the divider
+// residual d̃ can be negative), and operands with all-zero low halves (shifted
+// values, so a quadrant degenerates to zero).
+func TestMulParMatchesStdlib(t *testing.T) {
+	if testing.Short() {
+		t.Skip("multi-megabit reference multiplies")
+	}
+	rng := rand.New(rand.NewSource(3))
+	pairs := [][2]int{
+		{1 << 20, 1 << 20},       // below the gate: plain mul path
+		{9 << 20, 9 << 20},       // balanced quadrants
+		{16 << 20, 9 << 20},      // unbalanced
+		{9 << 20, mulParMinBits}, // y exactly at the gate
+		{9<<20 + 1, 8<<20 + 333}, // odd word counts
+	}
+	for _, p := range pairs {
+		x := randBits(rng, p[0])
+		y := randBits(rng, p[1])
+		for _, sx := range []int64{1, -1} {
+			for _, sy := range []int64{1, -1} {
+				xs := new(big.Int).Mul(x, big.NewInt(sx))
+				ys := new(big.Int).Mul(y, big.NewInt(sy))
+				if !eq(mulPar(xs, ys), new(big.Int).Mul(xs, ys)) {
+					t.Fatalf("mulPar mismatch at %d/%d bits, signs %d/%d", p[0], p[1], sx, sy)
+				}
+			}
+		}
+	}
+	// Zero low half: low quadrant products vanish.
+	x := new(big.Int).Lsh(randBits(rng, 5<<20), 5<<20)
+	y := randBits(rng, 9<<20)
+	if !eq(mulPar(x, y), new(big.Int).Mul(x, y)) {
+		t.Fatal("mulPar mismatch for zero-low-half operand")
 	}
 }
 

@@ -30,10 +30,11 @@ const (
 	log2of10 = 3.321928094887362
 	// Chudnovsky yields log10(640320³/1728) ≈ 14.1816 decimal digits per term.
 	digitsPerTerm = 14.181647462725477
-	// Decimal guard digits computed beyond what is requested. The integer
-	// pipeline is exact except for the floored √ and division, so the guard only
-	// needs to exceed the longest run of 9s/0s near the target (≤ 6 below 10⁶,
-	// well under 32 below ~5·10⁸).
+	// Decimal guard digits computed beyond what is requested. The pipeline's
+	// approximations — the floored √ (≤1 ulp of 10^total), the Q/R truncation
+	// (<2^-60), and the approximate division (±1 ulp) — total a few ulps, so
+	// the guard only needs to exceed the longest run of 9s/0s near the target
+	// (≤ 6 below 10⁶, well under 32 below ~5·10⁸).
 	guardDigits = 32
 	// Per-operand bit length at which bigfft.Mul beats stdlib Karatsuba on this
 	// class of inputs (measured crossover ≈ 160k–200k bits; below it bigfft
@@ -41,9 +42,12 @@ const (
 	fftMinBits = 200000
 	// Context digits shown on each side of the target digit.
 	ctxWindow = 5
-	// Below this many terms a subtree is split serially — goroutine overhead
-	// would otherwise dominate the tiny multiplies near the leaves.
-	serialCutoff = 256
+	// Below this many terms a subtree is split serially: a chunky serial leaf
+	// keeps cache locality and its operands (~225k bits of Q at the cutoff)
+	// sit at the FFT crossover, so everything above the cutoff combines
+	// through the mul dispatcher and everything below belongs to Karatsuba
+	// anyway.
+	serialCutoff = 2048
 )
 
 // mul returns x·y, using FFT for large operands and Karatsuba otherwise.
@@ -54,20 +58,27 @@ func mul(x, y *big.Int) *big.Int {
 	return new(big.Int).Mul(x, y)
 }
 
-// pow10 returns 10^n by square-and-multiply, using the FFT path for the large
+// pow5 returns 5^n by square-and-multiply, using the FFT path for the large
 // products.
-func pow10(n int) *big.Int {
+func pow5(n int) *big.Int {
 	result := big.NewInt(1)
-	base := big.NewInt(10)
+	base := big.NewInt(5)
 	for n > 0 {
 		if n&1 == 1 {
-			result = mul(result, base)
+			result = mulPar(result, base)
 		}
 		if n >>= 1; n > 0 {
-			base = mul(base, base)
+			base = mulPar(base, base)
 		}
 	}
 	return result
+}
+
+// pow10 returns 10^n as 5^n·2^n: the multiply chain runs on the ~30% smaller
+// 5^n operands (2.32 vs 3.32 bits per digit) and the power of two is one shift.
+func pow10(n int) *big.Int {
+	p := pow5(n)
+	return p.Lsh(p, uint(n))
 }
 
 // splitTerm is the binary-splitting base case for a single term k = a.
@@ -108,14 +119,19 @@ func binarySplit(a, b int64) (P, Q, R *big.Int) {
 }
 
 // parallelSplit computes the binary split over [a, b) with the two halves and
-// the combine multiplications run concurrently down to a serial cutoff.
+// the combine multiplications run concurrently down to the serial cutoff.
+// Recursing to the cutoff (rather than to a core-count depth) keeps every
+// combine above ~serialCutoff terms on the mul dispatcher — a depth-limited
+// split left each leaf's top combines, megabit operands included, on the
+// stdlib path — and the thousands of small subtree goroutines let the
+// scheduler absorb the ~2× first-to-last leaf work skew.
 //
 // needP reports whether this node's P output is consumed by its parent. Only
 // the left child's P feeds R = R1·Q2 + P1·R2, so the entire rightmost spine
 // (starting at the root) can skip forming P = P1·P2 — the largest discarded
 // multiply in the whole computation.
-func parallelSplit(a, b int64, depth int, needP bool) (P, Q, R *big.Int) {
-	if depth <= 0 || b-a < serialCutoff {
+func parallelSplit(a, b int64, needP bool) (P, Q, R *big.Int) {
+	if b-a < serialCutoff {
 		P, Q, R = binarySplit(a, b)
 		return
 	}
@@ -123,8 +139,8 @@ func parallelSplit(a, b int64, depth int, needP bool) (P, Q, R *big.Int) {
 	var P1, Q1, R1, P2, Q2, R2 *big.Int
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); P1, Q1, R1 = parallelSplit(a, m, depth-1, true) }()
-	go func() { defer wg.Done(); P2, Q2, R2 = parallelSplit(m, b, depth-1, needP) }()
+	go func() { defer wg.Done(); P1, Q1, R1 = parallelSplit(a, m, true) }()
+	go func() { defer wg.Done(); P2, Q2, R2 = parallelSplit(m, b, needP) }()
 	wg.Wait()
 
 	// Combine. Q, R1·Q2 and P1·R2 are independent products; run them
@@ -161,22 +177,15 @@ func terms(d int) int64 {
 	return int64(math.Ceil(float64(d)/digitsPerTerm)) + 4
 }
 
-// parallelDepth picks the recursion depth that exposes ≈4 tasks per core.
-func parallelDepth() int {
-	d := 0
-	for (1 << d) < 4*runtime.NumCPU() {
-		d++
-	}
-	return d
-}
-
 // stageTimes records per-stage durations when piFloor is asked to profile.
-type stageTimes struct{ split, sqrt, div time.Duration }
+// sqrt runs concurrently with split; sqrtTail is the part of its wall time not
+// hidden behind the split (zero when the split finishes last).
+type stageTimes struct{ split, sqrt, sqrtTail, div time.Duration }
 
 // piFloor returns ⌊π·10^d⌋ as a big.Int — its decimal string is "3" followed by
 // the first d decimal digits of π. The whole pipeline is integer arithmetic
-// (the only float is the one-off √10005), so the large multiply and the final
-// division both go through the FFT path.
+// (the √10005 is an integer Newton iteration too), so the large multiplies and
+// the final division all go through the FFT path.
 func piFloor(d int, st *stageTimes) *big.Int { return piFloorGuard(d, guardDigits, st) }
 
 // piFloorGuard is piFloor with an explicit guard, so tests can confirm the
@@ -184,25 +193,54 @@ func piFloor(d int, st *stageTimes) *big.Int { return piFloorGuard(d, guardDigit
 func piFloorGuard(d, guard int, st *stageTimes) *big.Int {
 	total := d + guard
 
-	t := time.Now()
-	_, Q, R := parallelSplit(1, terms(total), parallelDepth(), false)
-	if st != nil {
-		st.split = time.Since(t)
-	}
+	// S = ⌊√10005 · 10^total⌋ (FFT inverse-square-root) depends on nothing from
+	// the split, so it runs concurrently: the split saturates every core while
+	// the √ is a single serial Newton chain, which the overlap mostly hides.
+	var (
+		S        *big.Int
+		sqrtDur  time.Duration
+		sqrtDone time.Time
+		swg      sync.WaitGroup
+	)
+	swg.Add(1)
+	go func() {
+		defer swg.Done()
+		t := time.Now()
+		S = sqrt10005Scaled(total)
+		sqrtDur = time.Since(t)
+		sqrtDone = time.Now()
+	}()
 
-	// S = ⌊√10005 · 10^total⌋, via the FFT inverse-square-root.
-	t = time.Now()
-	S := sqrt10005Scaled(total)
+	t := time.Now()
+	_, Q, R := parallelSplit(1, terms(total), false)
+	splitDone := time.Now()
+	swg.Wait()
 	if st != nil {
-		st.sqrt = time.Since(t)
+		st.split = splitDone.Sub(t)
+		st.sqrt = sqrtDur
+		if st.sqrtTail = sqrtDone.Sub(splitDone); st.sqrtTail < 0 {
+			st.sqrtTail = 0
+		}
 	}
 
 	// π·10^total = 426880·√10005·Q·10^total / (13591409·Q + R)
 	//            = 426880·S·Q / (13591409·Q + R)
 	t = time.Now()
-	num := mul(new(big.Int).Mul(big.NewInt(426880), S), Q)
+	// The quotient is invariant when Q and R are scaled together, and exact
+	// binary splitting leaves them ≈2.28× larger than the quotient needs, so
+	// truncate both to B bits first. Dropping the same power of two from each
+	// perturbs the quotient relatively by < 2^(2−B) — under 2^-60 absolute in
+	// π·10^total, absorbed by the guard digits exactly like the √'s floor
+	// bias. Rsh floors the negative R toward −∞, keeping both truncation
+	// errors in [0, 2^j) as that bound assumes.
+	B := int(math.Ceil(float64(total)*log2of10)) + 64
+	if j := Q.BitLen() - B; j > 0 {
+		Q.Rsh(Q, uint(j))
+		R.Rsh(R, uint(j))
+	}
+	num := mulPar(new(big.Int).Mul(big.NewInt(426880), S), Q)
 	den := new(big.Int).Add(new(big.Int).Mul(c13591409, Q), R)
-	v := divFFT(num, den) // ⌊π·10^total⌋
+	v := divApprox(num, den) // ⌊π·10^total⌋, possibly one ulp low — guard-absorbed
 	if st != nil {
 		st.div = time.Since(t)
 	}
@@ -261,7 +299,7 @@ func main() {
 		fmt.Printf("π = %s\n", s)
 		fmt.Printf("Total time: %v\n", elapsed)
 		if *verbose {
-			fmt.Printf("  split %v, sqrt %v, div %v\n", st.split, st.sqrt, st.div)
+			fmt.Printf("  split %v, sqrt %v (%v exposed), div %v\n", st.split, st.sqrt, st.sqrtTail, st.div)
 		}
 		return
 	}
@@ -273,7 +311,7 @@ func main() {
 	fmt.Printf("Digit %d of π is: %d\n", *digitPos, digit)
 	fmt.Printf("Total time: %v\n", elapsed)
 	if *verbose {
-		fmt.Printf("  split %v, sqrt %v, div %v\n", st.split, st.sqrt, st.div)
+		fmt.Printf("  split %v, sqrt %v (%v exposed), div %v\n", st.split, st.sqrt, st.sqrtTail, st.div)
 	}
 
 	// Context window: trim positions before the integer part for small digitPos.
