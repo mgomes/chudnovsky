@@ -62,9 +62,25 @@ Context: ...94581[5]13092...
 
 Chudnovsky converges at ≈14.18 digits per term:
 
-```
-1/π = 12 ∑ (-1)^k (6k)! (545140134k + 13591409) / ((3k)! (k!)³ (640320³)^k)
-```
+$$
+\frac{1}{\pi}
+=
+\frac{12}{640320^{3/2}}
+\sum_{k=0}^{\infty}
+\frac{(-1)^k (6k)! (13591409 + 545140134k)}
+{(3k)! (k!)^3 640320^{3k}}.
+$$
+
+Equivalently, the implementation truncates the denominator series:
+
+$$
+S_n =
+\sum_{k=0}^{n-1}
+\frac{(-1)^k (6k)! (13591409 + 545140134k)}
+{(3k)! (k!)^3 640320^{3k}},
+\qquad
+\pi \approx \frac{426880\sqrt{10005}}{S_n}.
+$$
 
 Binary splitting evaluates the truncated series as a single rational `Q`, `R`,
 turning the sum into a balanced tree of big-integer multiplications — `O(M(n)
