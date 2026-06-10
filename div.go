@@ -4,18 +4,36 @@ import "math/big"
 
 var bigOne = big.NewInt(1)
 
+// recipGuardBits is the relative-precision margin kept beyond a Newton level's
+// result width when the divisor is truncated to that level's needs.
+const recipGuardBits = 64
+
 // recip returns an approximation of ⌊2^s / v⌋ for v > 0, computed with Newton's
 // method so the large multiplications go through the FFT path. Precision is
-// doubled on the way down the recursion, so the cost is dominated by the final
-// (full-size) step rather than O(log) full-size multiplies.
+// doubled on the way down the recursion, and the divisor is truncated to each
+// level's working precision on the way, so the cost is dominated by the final
+// (full-size) step rather than O(log) multiplies against the full-size v.
 //
-// The result is floor-biased: 0 ≤ 2^s/v − recip(v, s) < 2, independent of size.
-// (Base case: exact floor, error in [0,1). Newton step: substituting the child
-// error ε into r0·(2^(s+1) − v·r0) gives 2^(2s)/v − vε² exactly, and with
-// sp = (s+vb)/2+1 the squared term is ≤ ε²/4 ulps, so the error recurrence
-// E ← E²/4 + 1 has fixed point 2.)
+// Error contract: 2^s/v − recip(v, s) ∈ (−2^-50, 2) — within 2 below the exact
+// value, or above it by an amount that can round the integer result one too
+// high only when 2^s/v sits within 2^-50 of an integer. Below the bias bound:
+// the Newton step is exact algebra, r0·(2^(s+1) − v·r0) = 2^(2s)/v − vε² for
+// any child error ε, and with sp = (s+vb)/2+1 the vε² term is ≤ ε²/4 ulps, so
+// the downward recurrence E ← E²/4 + 1 has fixed point 2. Above: truncating v
+// to its top (s−vb)+64 bits (and lowering s by the same shift, which leaves
+// the value unchanged) raises the target 2^(s−h)/⌊v/2^h⌋ relatively by less
+// than 2^(2−64) per level, and the step never overshoots its own target.
 func recip(v *big.Int, s uint) *big.Int {
 	vb := uint(v.BitLen())
+	// Bits of v below the level's result width (plus margin) cannot influence
+	// the result beyond the contract — drop them so every multiply below, and
+	// the base-case division, run on operands sized to the result.
+	if s > vb && vb > (s-vb)+recipGuardBits {
+		h := vb - (s - vb) - recipGuardBits
+		v = new(big.Int).Rsh(v, h)
+		s -= h
+		vb -= h
+	}
 	// Base case: the result is small enough that stdlib division is cheaper than
 	// another Newton level.
 	if s <= vb+2*fftMinBits {
@@ -33,12 +51,13 @@ func recip(v *big.Int, s uint) *big.Int {
 	return r.Rsh(r, s)
 }
 
-// divApprox returns ⌊u / v⌋ or one less, for u ≥ 0 and v > 0. With
-// s = u.BitLen()+2 (the +2 is load-bearing), u·E/2^s < 1/2 for recip's
-// E < 2, so the reciprocal multiply lands within one ulp below the exact
-// floor. The π pipeline calls this directly: its guard digits absorb the
-// slack, and skipping divFFT's verification multiply saves a full-size FFT.
-// Small operands fall through to the standard library and are exact.
+// divApprox returns ⌊u / v⌋ to within one ulp either side, for u ≥ 0 and
+// v > 0. With s = u.BitLen()+2 (the +2 is load-bearing), u·E/2^s < 1/2 for
+// recip's |E| < 2, so the reciprocal multiply lands on the exact floor, one
+// below, or — only on a ~2^-50 fractional alignment — one above. The π
+// pipeline calls this directly: its guard digits absorb the slack, and
+// skipping divFFT's verification multiply saves a full-size FFT. Small
+// operands fall through to the standard library and are exact.
 func divApprox(u, v *big.Int) *big.Int {
 	if v.Sign() <= 0 {
 		panic("divApprox: non-positive divisor")
@@ -50,8 +69,16 @@ func divApprox(u, v *big.Int) *big.Int {
 		return new(big.Int).Quo(u, v)
 	}
 	s := uint(u.BitLen() + 2)
-	q := mul(u, recip(v, s)) // ≈ u·2^s/v
-	return q.Rsh(q, s)
+	r := recip(v, s)
+	// Bits of u below the quotient width (plus margin) shift the result by
+	// well under an ulp; drop them so the final multiply is sized to the
+	// quotient instead of to u.
+	var k uint
+	if vb := uint(v.BitLen()); vb > recipGuardBits {
+		k = vb - recipGuardBits
+	}
+	q := mul(new(big.Int).Rsh(u, k), r) // ≈ (u/2^k)·(2^s/v)
+	return q.Rsh(q, s-k)
 }
 
 // divFFT returns exactly ⌊u / v⌋ for u ≥ 0 and v > 0: divApprox plus an exact
