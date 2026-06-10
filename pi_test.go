@@ -88,7 +88,8 @@ func TestRegressionLocks(t *testing.T) {
 	}{
 		{1000, 8, true},
 		{10000, 7, true},
-		{50000, 4, true},  // first to use the FFT divider (recip base case)
+		{50000, 4, true},  // stdlib divider path (num is below the FFT gate post-truncation)
+		{70000, 9, true},  // first to use the FFT divider (recip base case)
 		{300000, 9, true}, // first to exercise recip's Newton recursion
 		{100000, 4, false},
 		{1000000, 5, false},

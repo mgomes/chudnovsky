@@ -226,6 +226,18 @@ func piFloorGuard(d, guard int, st *stageTimes) *big.Int {
 	// π·10^total = 426880·√10005·Q·10^total / (13591409·Q + R)
 	//            = 426880·S·Q / (13591409·Q + R)
 	t = time.Now()
+	// The quotient is invariant when Q and R are scaled together, and exact
+	// binary splitting leaves them ≈2.28× larger than the quotient needs, so
+	// truncate both to B bits first. Dropping the same power of two from each
+	// perturbs the quotient relatively by < 2^(2−B) — under 2^-60 absolute in
+	// π·10^total, absorbed by the guard digits exactly like the √'s floor
+	// bias. Rsh floors the negative R toward −∞, keeping both truncation
+	// errors in [0, 2^j) as that bound assumes.
+	B := int(math.Ceil(float64(total)*log2of10)) + 64
+	if j := Q.BitLen() - B; j > 0 {
+		Q.Rsh(Q, uint(j))
+		R.Rsh(R, uint(j))
+	}
 	num := mul(new(big.Int).Mul(big.NewInt(426880), S), Q)
 	den := new(big.Int).Add(new(big.Int).Mul(c13591409, Q), R)
 	v := divFFT(num, den) // ⌊π·10^total⌋
