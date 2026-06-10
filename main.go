@@ -178,7 +178,9 @@ func parallelDepth() int {
 }
 
 // stageTimes records per-stage durations when piFloor is asked to profile.
-type stageTimes struct{ split, sqrt, div time.Duration }
+// sqrt runs concurrently with split; sqrtTail is the part of its wall time not
+// hidden behind the split (zero when the split finishes last).
+type stageTimes struct{ split, sqrt, sqrtTail, div time.Duration }
 
 // piFloor returns ⌊π·10^d⌋ as a big.Int — its decimal string is "3" followed by
 // the first d decimal digits of π. The whole pipeline is integer arithmetic
@@ -191,17 +193,34 @@ func piFloor(d int, st *stageTimes) *big.Int { return piFloorGuard(d, guardDigit
 func piFloorGuard(d, guard int, st *stageTimes) *big.Int {
 	total := d + guard
 
+	// S = ⌊√10005 · 10^total⌋ (FFT inverse-square-root) depends on nothing from
+	// the split, so it runs concurrently: the split saturates every core while
+	// the √ is a single serial Newton chain, which the overlap mostly hides.
+	var (
+		S        *big.Int
+		sqrtDur  time.Duration
+		sqrtDone time.Time
+		swg      sync.WaitGroup
+	)
+	swg.Add(1)
+	go func() {
+		defer swg.Done()
+		t := time.Now()
+		S = sqrt10005Scaled(total)
+		sqrtDur = time.Since(t)
+		sqrtDone = time.Now()
+	}()
+
 	t := time.Now()
 	_, Q, R := parallelSplit(1, terms(total), parallelDepth(), false)
+	splitDone := time.Now()
+	swg.Wait()
 	if st != nil {
-		st.split = time.Since(t)
-	}
-
-	// S = ⌊√10005 · 10^total⌋, via the FFT inverse-square-root.
-	t = time.Now()
-	S := sqrt10005Scaled(total)
-	if st != nil {
-		st.sqrt = time.Since(t)
+		st.split = splitDone.Sub(t)
+		st.sqrt = sqrtDur
+		if st.sqrtTail = sqrtDone.Sub(splitDone); st.sqrtTail < 0 {
+			st.sqrtTail = 0
+		}
 	}
 
 	// π·10^total = 426880·√10005·Q·10^total / (13591409·Q + R)
@@ -268,7 +287,7 @@ func main() {
 		fmt.Printf("π = %s\n", s)
 		fmt.Printf("Total time: %v\n", elapsed)
 		if *verbose {
-			fmt.Printf("  split %v, sqrt %v, div %v\n", st.split, st.sqrt, st.div)
+			fmt.Printf("  split %v, sqrt %v (%v exposed), div %v\n", st.split, st.sqrt, st.sqrtTail, st.div)
 		}
 		return
 	}
@@ -280,7 +299,7 @@ func main() {
 	fmt.Printf("Digit %d of π is: %d\n", *digitPos, digit)
 	fmt.Printf("Total time: %v\n", elapsed)
 	if *verbose {
-		fmt.Printf("  split %v, sqrt %v, div %v\n", st.split, st.sqrt, st.div)
+		fmt.Printf("  split %v, sqrt %v (%v exposed), div %v\n", st.split, st.sqrt, st.sqrtTail, st.div)
 	}
 
 	// Context window: trim positions before the integer part for small digitPos.
