@@ -17,11 +17,17 @@ digit mode just slices the same arbitrary-precision value.)
 - **FFT multiplication** (Schönhage–Strassen, via
   [`bigfft`](https://github.com/remyoudompheng/bigfft)) for large operands, with
   an automatic fallback to `math/big` Karatsuba below the measured crossover
-- **FFT-backed division and √** — a Newton reciprocal and a Newton
+- **Truncated-Newton division and √** — a Newton reciprocal and a Newton
   inverse-square-root reduce both to FFT multiplies (the standard library's
-  division and `Float.Sqrt` are Karatsuba-only)
-- **Exact integer-domain pipeline** — the result is computed as `⌊π·10ⁿ⌋` with
-  no floating point at all
+  division and `Float.Sqrt` are Karatsuba-only), every operand is truncated to
+  the precision its step actually needs, and the Newton steps multiply only the
+  half-width residuals
+- **Integer-domain pipeline** — the result is computed as `⌊π·10ⁿ⌋` with no
+  floating point at all; the few bounded approximations (floored √, reciprocal
+  slack, operand truncation) stay within ulps of `10ⁿ⁺ᵍ` and are absorbed by
+  the guard digits
+- **Quadrant-parallel large multiplies** keep the serial √/division stages on
+  all cores (bigfft's transform is single-threaded)
 - **Cheap digit extraction** via modular arithmetic (no full base conversion)
 
 ## Usage
@@ -48,7 +54,7 @@ Using 10 CPU cores
 Calculating digit 1000000 of π
 
 Digit 1000000 of π is: 5
-Total time: 545ms
+Total time: 194ms
 Context: ...94581[5]13092...
 ```
 
@@ -65,21 +71,38 @@ turning the sum into a balanced tree of big-integer multiplications — `O(M(n)
 log n)` instead of `O(n²)`. The largest of those multiplications (and the final
 division) dominate at scale, which is where FFT pays off.
 
+Exact splitting leaves `Q` and `R` ≈2.3× larger than the final quotient needs,
+and the quotient `426880·S·Q / (13591409·Q + R)` is invariant when both scale
+together — so both are truncated to the target precision (plus guard) before
+the division, and the Newton reciprocal behind that division re-truncates its
+divisor at every precision-doubling level. The √ runs concurrently with the
+splitting, which hides it entirely.
+
 ## Performance
 
-Measured on a 10-core Apple Silicon machine, total wall time (best of N):
+Measured on a 10-core Apple Silicon machine, total wall time. The round 1 and
+round 2 columns were re-measured back to back on the same machine and Go
+toolchain (best of 3, interleaved); the serial baseline is the original
+pre-optimization implementation.
 
-| digit position | before | after | speedup |
-| --- | --- | --- | --- |
-| 10,000 | 40 ms | 5 ms | 7.6× |
-| 100,000 | 3.5 s | 33 ms | 105× |
-| 1,000,000 | 1.32 s | 0.48 s | 2.8× |
-| 10,000,000 | 52.6 s | 9.0 s | 5.9× |
+| digit position | serial baseline | round 1: FFT + parallel | round 2: truncated Newton | total |
+| --- | --- | --- | --- | --- |
+| 10,000 | 40 ms | 2.6 ms | 2.0 ms | 20× |
+| 100,000 | 3.5 s | 32 ms | 17 ms | 206× |
+| 1,000,000 | 1.32 s | 0.51 s | 0.19 s | 6.9× |
+| 10,000,000 | 52.6 s | 9.5 s | 2.2 s | 24× |
 
-The 10k–100k jumps come largely from fixing an extraction bug; the 1M–10M gains
-are the FFT + parallel arithmetic, and grow with size. Note that Go's `math/big`
-has no FFT multiply, so the standard-library ceiling is Karatsuba (`O(n^1.585)`);
-`bigfft` brings the hot multiply/divide/√ down toward `O(n log n)`.
+Round 1 (the 10k–100k jumps come largely from fixing an extraction bug) routed
+the heavy arithmetic through FFT and parallelized the splitting: Go's
+`math/big` has no FFT multiply, so the standard-library ceiling is Karatsuba
+(`O(n^1.585)`); `bigfft` brings the hot multiply/divide/√ down toward
+`O(n log n)`. Round 2 stopped doing work the result can't see: at 10M digits
+the division stage was 69% of the runtime, dividing numbers ≈3.3× wider than
+the quotient with a reciprocal computed against the full-width divisor at
+every Newton level. Truncating to needed precision, multiplying only Newton
+residuals, overlapping the √ with the splitting, and running the remaining
+serial multiplies in quadrants took 10M digits from 9.5s to 2.2s (div stage:
+6.6s → 0.7s).
 
 ## Tests
 

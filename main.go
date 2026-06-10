@@ -30,10 +30,11 @@ const (
 	log2of10 = 3.321928094887362
 	// Chudnovsky yields log10(640320³/1728) ≈ 14.1816 decimal digits per term.
 	digitsPerTerm = 14.181647462725477
-	// Decimal guard digits computed beyond what is requested. The integer
-	// pipeline is exact except for the floored √ and division, so the guard only
-	// needs to exceed the longest run of 9s/0s near the target (≤ 6 below 10⁶,
-	// well under 32 below ~5·10⁸).
+	// Decimal guard digits computed beyond what is requested. The pipeline's
+	// approximations — the floored √ (≤1 ulp of 10^total), the Q/R truncation
+	// (<2^-60), and the approximate division (±1 ulp) — total a few ulps, so
+	// the guard only needs to exceed the longest run of 9s/0s near the target
+	// (≤ 6 below 10⁶, well under 32 below ~5·10⁸).
 	guardDigits = 32
 	// Per-operand bit length at which bigfft.Mul beats stdlib Karatsuba on this
 	// class of inputs (measured crossover ≈ 160k–200k bits; below it bigfft
@@ -183,8 +184,8 @@ type stageTimes struct{ split, sqrt, sqrtTail, div time.Duration }
 
 // piFloor returns ⌊π·10^d⌋ as a big.Int — its decimal string is "3" followed by
 // the first d decimal digits of π. The whole pipeline is integer arithmetic
-// (the only float is the one-off √10005), so the large multiply and the final
-// division both go through the FFT path.
+// (the √10005 is an integer Newton iteration too), so the large multiplies and
+// the final division all go through the FFT path.
 func piFloor(d int, st *stageTimes) *big.Int { return piFloorGuard(d, guardDigits, st) }
 
 // piFloorGuard is piFloor with an explicit guard, so tests can confirm the
